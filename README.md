@@ -2,11 +2,11 @@
 
 The goal of this tool is to make arbitrary SVG files as benign and safe to serve as images in other common Web file formats. SVG files aren't just images, they're documents with full access to all HTML and JavaScript features. This tool filters SVG files to remove use of any potentially risky features.
 
-    * Removes scripting. Prevents SVG files from being used for cross-site scripting attacks. Although browsers don't allow scripts in `<img>`, they do allow scripting when SVG files are opened directly as a top-level document.
+  * Removes scripting. Prevents SVG files from being used for cross-site scripting attacks. Although browsers don't allow scripts in `<img>`, they do allow scripting when SVG files are opened directly as a top-level document.
 
-    * Removes hyperlinks to other documents. Makes SVG files less attractive for SEO spam and phishing.
+  * Removes hyperlinks to other documents. Makes SVG files less attractive for SEO spam and phishing.
 
-    * Removes references to cross-origin resources. Stops 3rd parties from tracking who is viewing the image.
+  * Removes references to cross-origin resources. Stops 3rd parties from tracking who is viewing the image.
 
 This tool removes any elements and attributes that aren't in its allowlist and filters all URLs to be same-origin only (paths without a host name). It is likely to break some SVG images. Please file a bug when you find an image that is filtered too harshly!
 
