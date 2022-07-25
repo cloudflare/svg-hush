@@ -8,7 +8,7 @@ keywords = ["xss", "sanitizer", "purify", "filter", "security"]
 publish = false
 
 [dependencies]
-once_cell = "1.13.0"
+once_cell = "1.12.1"
 quick-error = "2.0.1"
 url = "2.2.2"
 xml-rs = "0.8.4"
