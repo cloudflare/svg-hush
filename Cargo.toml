@@ -1,11 +1,14 @@
 [package]
 name = "svg-hush"
-version = "0.1.0"
+authors = ["Cloudflare <https://cloudflare.com>"]
+version = "0.9.0"
 edition = "2021"
 description = "Strip scripting and other abusable features from SVG files"
 categories = ["multimedia::images"]
 keywords = ["xss", "sanitizer", "purify", "filter", "security"]
-publish = false
+license = "Apache-2.0 OR MIT"
+exclude = ["tests/"]
+repository = "https://github.com/cloudflare/svg-hush"
 
 [dependencies]
 once_cell = "1.12.1"
