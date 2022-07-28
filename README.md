@@ -14,7 +14,7 @@ This tool might make SVG files smaller by removing unnecessary junk from them, b
 
 ## Sanitization vs CSP
 
-Regardless of this filtering, it's best to serve SVG images with a restrictive `Content-Security-Policy`. This tool is a defense-in-depth for cases where the CSP header may be unsupported, lost, or bypassed (e.g. due to server/CMS misconfiguration or a `SericeWorker` that doesn't forward headers).
+Regardless of this filtering, it's best to serve SVG images with a restrictive `Content-Security-Policy`. This tool is a defense-in-depth for cases where the CSP header may be unsupported, lost, or bypassed (e.g. due to server/CMS misconfiguration or a `ServiceWorker` that doesn't forward headers).
 
 ## Early release warning
 
