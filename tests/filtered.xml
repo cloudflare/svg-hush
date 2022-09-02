@@ -49,6 +49,9 @@
     <a>test 3</a>
     <a>test 4</a>
 
+    <a>data gif</a>
+    <image href="data:image/gif,GIF89a"/>
+    <image/>
     <a>test 5</a>
     <a>test 6</a>
     <use href="defs.svg#icon-1"/>

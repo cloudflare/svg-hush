@@ -4,7 +4,8 @@ use svg_hush::*;
 fn whole_file() {
     let test = std::fs::read("tests/test.xml").unwrap();
     let expected = std::fs::read_to_string("tests/filtered.xml").unwrap();
-    let f = Filter::new();
+    let mut f = Filter::new();
+    f.set_data_url_filter(data_url_filter::allow_standard_images);
     let mut out = Vec::new();
     f.filter(&mut test.as_slice(), &mut out).unwrap();
     // cargo run -- tests/test.xml  > tests/filtered.xml

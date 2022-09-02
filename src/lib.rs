@@ -1,17 +1,33 @@
-use xml::name::OwnedName;
+//! Filters SVG files to make them safe to host anywhere.
+//!
+//! ```rust
+//! use svg_hush::*;
+//! let mut file = "<svg xmlns='http://www.w3.org/2000/svg' />".as_bytes();
+//! let mut filter = Filter::new();
+//! filter.set_data_url_filter(data_url_filter::allow_standard_images);
+//! let mut out = Vec::new();
+//! filter.filter(&mut file, &mut out)?;
+//! # Ok::<_, FError>(())
+//! ```
+
+use crate::data_url_filter::DataUrl;
+use crate::data_url_filter::DataUrlFilterResult;
 use once_cell::sync::Lazy;
+use quick_error::quick_error;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io;
 use xml::attribute::{Attribute, OwnedAttribute};
 use xml::EmitterConfig;
 use xml::name::Name;
+use xml::name::OwnedName;
 use xml::ParserConfig;
 use xml::reader::XmlEvent as REvent;
 use xml::writer::XmlEvent as WEvent;
-use quick_error::quick_error;
+
 
 quick_error! {
+    /// XML parsing error, I/O error, etc.
     #[derive(Debug)]
     pub enum FError {
         Reader(err: xml::reader::Error) {
@@ -28,6 +44,11 @@ quick_error! {
 }
 
 mod attrs;
+
+/// Optionally, you can allow or modify `data:` URLs.
+///
+/// Please be careful with this, because these URLs can carry any file type.
+pub mod data_url_filter;
 
 enum Attr<'a> {
     /// Left unchanged
@@ -155,18 +176,22 @@ static ATTRIBUTE_TYPES: Lazy<HashMap<&'static str, AttrType>> = Lazy::new(|| {
     attribute_types
 });
 
+/// The main entry point. Call [`Filter::new`]
 pub struct Filter {
     /// May improve compression
     sort_attributes: bool,
     /// We're not allowing non-SVG namespaces anyway
     strip_prefixes: bool,
+    image_filter: Option<Box<dyn for<'a> Fn(&'a DataUrl<'a>) -> DataUrlFilterResult>>,
 }
 
 impl Filter {
+    /// Create new filter instance. Call [`Filter::filter`] on it.
     pub fn new() -> Self {
         Self {
             sort_attributes: true,
             strip_prefixes: true,
+            image_filter: None,
         }
     }
 
@@ -182,7 +207,8 @@ impl Filter {
         return ElementAction::Drop;
     }
 
-    pub fn filter(&self, source: impl Read, sink: impl Write) -> Result<(), FError>{
+    /// Read an SVG image from the `source` and write a filtered image to the `destination`.
+    pub fn filter<Read: io::Read, Write: io::Write>(&self, source: Read, destination: Write) -> Result<(), FError> {
         let parser = ParserConfig::new()
             .cdata_to_characters(true)
             .ignore_comments(true)
@@ -195,7 +221,7 @@ impl Filter {
             .autopad_comments(false)
             .perform_indent(true)
             .pad_self_closing(false)
-            .create_writer(sink);
+            .create_writer(destination);
 
         let mut skipping = 0;
         let mut accumulating_css_text: Option<String> = None;
@@ -269,7 +295,7 @@ impl Filter {
                         name.prefix = None;
                     }
                     if let Some(css) = accumulating_css_text.take() {
-                        writer.write(WEvent::Characters(&filtered_url_func(&css)))?;
+                        writer.write(WEvent::Characters(&self.filtered_url_func(&css)))?;
                     }
                     WEvent::EndElement {
                         name: Some((*name).borrow()),
@@ -310,6 +336,13 @@ impl Filter {
             writer.write(w)?;
         }
         Ok(())
+    }
+
+    /// This function will be called for every `data:` URL encountered in embedded images.
+    ///
+    /// This callback is not allowed to refer to its environment. Use `Arc<Mutex<_>>` to modify any shared state.
+    pub fn set_data_url_filter(&mut self, filter: impl Fn(&DataUrl) -> DataUrlFilterResult + 'static) {
+        self.image_filter = Some(Box::new(filter));
     }
 
     fn filter_attribute<'a>(&self, attr: Attribute<'a>, element_local_name: &str) -> Attr<'a> {
@@ -377,11 +410,11 @@ impl Filter {
                 => no_ns_attr_with_value(attr, attr_value),
 
             // Serious filtering starts here
-            Url => filter_url(&attr_value).map(|val| no_ns_attr_with_value(attr, val.into())).unwrap_or(Attr::Drop),
+            Url => self.filter_url(&attr_value).map(|val| no_ns_attr_with_value(attr, val.into())).unwrap_or(Attr::Drop),
             // The SVG spec says FuncIRI is a super simple `url(` token, but in browsers it's not. Browsers still support CSS-isms in url(),
             // so we'll just reuse CSS filter for them.
-            UrlFunc => no_ns_attr_with_value(attr, filtered_url_func(&attr_value).into()),
-            StyleSheet => no_ns_attr_with_value(attr, filtered_url_func(&attr_value).into()),
+            UrlFunc => no_ns_attr_with_value(attr, self.filtered_url_func(&attr_value).into()),
+            StyleSheet => no_ns_attr_with_value(attr, self.filtered_url_func(&attr_value).into()),
             _ => Attr::Drop,
         }
     }
@@ -390,176 +423,225 @@ impl Filter {
     fn may_use_href(element_local_name: &str) -> bool {
         matches!(element_local_name, "radialGradient" | "linearGradient" | "image" | "use" | "pattern" | "feImage")
     }
-}
 
-/// ## Why is this parser so hacky?
-///
-/// Filtering properly would require precisely tokenizing the input,
-/// which depends on supporting syntax of every SVG attribute and CSS.
-/// Any mismatch between actual syntax and the parser would risk these two getting out of sync,
-/// and enabling filter bypass (e.g. if our tokenizer saw a comment but browsers didn't).
-/// Proper implementation needs browser-grade parsers, and that's a big ask for a small tool.
-///
-/// So here's a brute approach instead: throwing out everything that isn't obviously trivial.
-/// We don't really need to support SVG files that rely on weird tricky syntax. We can mangle all
-/// the edge cases as long as we're erring on the side of safety.
-fn filtered_url_func(css_or_svg: &str) -> String {
-    // If we see something suspicious we'll try to remove it instead of throwing away the whole stylesheet/attribute.
-    css_or_svg.split_inclusive([';', '{', '}', ','])
-        .filter_map(|full_chunk| {
-            // CSS allows escapes in identifiers! No escape schenanigans allowed, as this makes matching require a proper tokenizer.
-            if full_chunk.contains('\\') {
-                // TODO: could perform unescaping instead
-                return None;
-            }
+    fn filter_data_url(&self, url_str: &str) -> Option<String> {
+        let f = self.image_filter.as_ref()?;
 
-            // without escapes it's reasonable to search for identifiers now (lowercase to make them case-insensitive)
-            let chunk_lower = full_chunk.to_ascii_lowercase();
-            // @rules don't allow extra whitespace, so apart from escapes, they can't be obfuscated
-            if chunk_lower.contains("@import") {
-                return None;
-            }
+        let url = DataUrl::process(url_str).ok()?;
+        match f(&url) {
+            DataUrlFilterResult::Drop => None,
+            DataUrlFilterResult::Keep => Some(url_str.to_owned()),
+            DataUrlFilterResult::Rewrite { mime_type, data } => {
+                let mut out = String::with_capacity(mime_type.len() + data.len()*8/6 + 20);
+                out.push_str("data:"); out.push_str(&mime_type); out.push_str(";base64,");
+                base64::encode_config_buf(data, base64::Config::new(base64::CharacterSet::Standard, false), &mut out);
+                Some(out)
+            },
+        }
+    }
 
-            // `url()` doesn't allow whitespace before '('
-            if chunk_lower.contains("url(") {
-                let mut out = String::with_capacity(chunk_lower.len());
-                // this is like split(), but with the match done on lowercased string for case-insensitivity. Indices are used to get original case back.
-                // this works thanks to to_ascii_lowercase preserving offsets.
-                let mut last_idx = 0;
-                let mut url_chunks = chunk_lower.match_indices("url(").chain(Some((full_chunk.len(), "")))
-                    .map(|(idx, frag)| {
-                        let s = &full_chunk[last_idx..idx];
-                        last_idx = idx+frag.len();
-                        s
-                    });
-                out.push_str(url_chunks.next().expect("first")); // text before `url(`
-                while let Some(url_chunk) = url_chunks.next() {
-                    // Too bad if you use unescaped () in your URL
-                    let mut urlfunc_parts = url_chunk.split(')');
-                    let urlfunc = urlfunc_parts.next().expect("first");
-                    let after_urlfunc = urlfunc_parts.next()?; // if it's none, it's `url(url(`, which we don't want
-                    let url = urlfunc.trim()
-                        // we've already established there are no escape chars in the chunk,
-                        // so there can't be any tricky things inside the string.
-                        // Sorry to everyone who uses unescaped quote chars at the end of their URLs.
-                        .trim_start_matches(['"', '\'']).trim_end_matches(['"', '\''])
-                        // the quoted value allows whitespace too!
-                        .trim();
-                    let url = filter_url(url)
-                        // no tricky chars please. For SVG it's important to keep url() even if the URL inside it is bogus
-                        // because otherwise properties like fill would default to black instead of transparent
-                        .filter(|url| !url.contains(['(',')','\'','"','\\']));
-                    let url = url.as_deref().unwrap_or("#");
-                    out.push_str("url(");
-                    out.push_str(url);
-                    out.push(')');
-                    out.push_str(after_urlfunc); // it's important to keep the terminator
+    /// Transforms URLs to relative (same-origin) URLs if possible. The host part is simply thrown away,
+    /// since we're not concerned about causing 404s. Files that depend on cross-origin resources can still
+    /// be made to work if the resources are copied to the same host as the file.
+    fn filter_url(&self, url_str: &str) -> Option<String> {
+        // The URL crate won't parse relative URLs directly, and `make_relative()` requires a base too
+        let base_url = url::Url::parse("https://127.0.0.1/__relpath_prefix__/").expect("base");
+        let url = base_url.join(url_str).ok()?;
+        if url.scheme() == "data" {
+            return self.filter_data_url(url_str);
+        }
+        if url.cannot_be_a_base() {
+            return None;
+        }
+
+        let path = url.path();
+        let mut relative = path
+            .strip_prefix("/__relpath_prefix__/")
+            .unwrap_or(path)
+            .to_string();
+        if relative.trim_start().starts_with("//") {
+            // path became scheme-relative URL
+            return None;
+        }
+        // defence in depth to prevent url being interpreted as having a scheme
+        if relative.contains(':') {
+            relative = relative.replace(':', "%3a");
+        }
+        if let Some(query) = url.query() {
+            relative.push('?');
+            relative.push_str(query);
+        }
+        // this is super unlikely to be an image
+        if relative == "/" {
+            return None;
+        }
+        if let Some(fragment) = url.fragment() {
+            relative.push('#');
+            relative.push_str(fragment);
+        }
+        // in case our type data was wrong and Url type was UrlFunc type, break the url() syntax
+        if relative.contains('(') {
+            relative = relative.replace('(', "%28");
+        }
+        Some(relative)
+    }
+
+    /// ## Why is this parser so hacky?
+    ///
+    /// Filtering properly would require precisely tokenizing the input,
+    /// which depends on supporting syntax of every SVG attribute and CSS.
+    /// Any mismatch between actual syntax and the parser would risk these two getting out of sync,
+    /// and enabling filter bypass (e.g. if our tokenizer saw a comment but browsers didn't).
+    /// Proper implementation needs browser-grade parsers, and that's a big ask for a small tool.
+    ///
+    /// So here's a brute approach instead: throwing out everything that isn't obviously trivial.
+    /// We don't really need to support SVG files that rely on weird tricky syntax. We can mangle all
+    /// the edge cases as long as we're erring on the side of safety.
+    fn filtered_url_func(&self, css_or_svg: &str) -> String {
+        // If we see something suspicious we'll try to remove it instead of throwing away the whole stylesheet/attribute.
+        css_or_svg.split_inclusive([';', '{', '}', ','])
+            .filter_map(|full_chunk| {
+                // CSS allows escapes in identifiers! No escape schenanigans allowed, as this makes matching require a proper tokenizer.
+                if full_chunk.contains('\\') {
+                    // TODO: could perform unescaping instead
+                    return None;
                 }
-                return Some(Cow::Owned(out));
-            }
 
-            Some(Cow::Borrowed(full_chunk))
-        })
-        .collect()
+                // without escapes it's reasonable to search for identifiers now (lowercase to make them case-insensitive)
+                let chunk_lower = full_chunk.to_ascii_lowercase();
+                // @rules don't allow extra whitespace, so apart from escapes, they can't be obfuscated
+                if chunk_lower.contains("@import") {
+                    return None;
+                }
+
+                // `url()` doesn't allow whitespace before '('
+                if chunk_lower.contains("url(") {
+                    let mut out = String::with_capacity(chunk_lower.len());
+                    // this is like split(), but with the match done on lowercased string for case-insensitivity. Indices are used to get original case back.
+                    // this works thanks to to_ascii_lowercase preserving offsets.
+                    let mut last_idx = 0;
+                    let mut url_chunks = chunk_lower.match_indices("url(").chain(Some((full_chunk.len(), "")))
+                        .map(|(idx, frag)| {
+                            let s = &full_chunk[last_idx..idx];
+                            last_idx = idx+frag.len();
+                            s
+                        });
+                    out.push_str(url_chunks.next().expect("first")); // text before `url(`
+                    while let Some(url_chunk) = url_chunks.next() {
+                        // Too bad if you use unescaped () in your URL
+                        let mut urlfunc_parts = url_chunk.split(')');
+                        let urlfunc = urlfunc_parts.next().expect("first");
+                        let after_urlfunc = urlfunc_parts.next()?; // if it's none, it's `url(url(`, which we don't want
+                        let url = urlfunc.trim()
+                            // we've already established there are no escape chars in the chunk,
+                            // so there can't be any tricky things inside the string.
+                            // Sorry to everyone who uses unescaped quote chars at the end of their URLs.
+                            .trim_start_matches(['"', '\'']).trim_end_matches(['"', '\''])
+                            // the quoted value allows whitespace too!
+                            .trim();
+                        let url = self.filter_url(url)
+                            // no tricky chars please. For SVG it's important to keep url() even if the URL inside it is bogus
+                            // because otherwise properties like fill would default to black instead of transparent
+                            .filter(|url| !url.contains(['(',')','\'','"','\\']));
+                        let url = url.as_deref().unwrap_or("#");
+                        out.push_str("url(");
+                        out.push_str(url);
+                        out.push(')');
+                        out.push_str(after_urlfunc); // it's important to keep the terminator
+                    }
+                    return Some(Cow::Owned(out));
+                }
+
+                Some(Cow::Borrowed(full_chunk))
+            })
+            .collect()
+    }
 }
 
 #[test]
 fn urlfunc() {
-    assert_eq!(filtered_url_func("hello, url(world)"), "hello, url(world)");
-    assert_eq!(filtered_url_func("hello, world"), "hello, world");
-    assert_eq!(filtered_url_func("hello, url(http://evil.com)"), "hello, url(#)");
-    assert_eq!(filtered_url_func("hello, url( http://evil.com )"), "hello, url(#)");
-    assert_eq!(filtered_url_func("hello, url( //evil.com )"), "hello, url(#)");
-    assert_eq!(filtered_url_func("url( /okay ), (), bye"), "url(/okay), (), bye");
-    assert_eq!(filtered_url_func("hello, url( unclosed"), "hello,");
-    assert_eq!(filtered_url_func("hello, url( ) url(    ) bork"), "hello, url() url() bork");
-    assert_eq!(filtered_url_func("hello, url('1' )url(  2  ) bork"), "hello, url(1)url(2) bork");
-    assert_eq!(filtered_url_func("hello, url('(' )"), "hello, url(%28)");
+    let f = Filter::new();
+    assert_eq!(f.filtered_url_func("hello, url(world)"), "hello, url(world)");
+    assert_eq!(f.filtered_url_func("hello, world"), "hello, world");
+    assert_eq!(f.filtered_url_func("hello, url(http://evil.com)"), "hello, url(#)");
+    assert_eq!(f.filtered_url_func("hello, url( http://evil.com )"), "hello, url(#)");
+    assert_eq!(f.filtered_url_func("hello, url( //evil.com )"), "hello, url(#)");
+    assert_eq!(f.filtered_url_func("url( /okay ), (), bye"), "url(/okay), (), bye");
+    assert_eq!(f.filtered_url_func("hello, url( unclosed"), "hello,");
+    assert_eq!(f.filtered_url_func("hello, url( ) url(    ) bork"), "hello, url() url() bork");
+    assert_eq!(f.filtered_url_func("hello, url('1' )url(  2  ) bork"), "hello, url(1)url(2) bork");
+    assert_eq!(f.filtered_url_func("hello, url('(' )"), "hello, url(%28)");
 }
 
 #[test]
 fn css() {
-    assert_eq!(filtered_url_func("color: red; background: URL(X); huh"), "color: red; background: url(X); huh");
-    assert_eq!(filtered_url_func("@import 'foo'; FONT-size: 1em;"), " FONT-size: 1em;");
-    assert_eq!(filtered_url_func("u;url(data:x);rl(hack)"), "u;url(#);rl(hack)");
-    assert_eq!(filtered_url_func("u;\\;rl(hack)"), "u;rl(hack)");
-    assert_eq!(filtered_url_func("u;\\,rl(hack)"), "u;rl(hack)");
-    assert_eq!(filtered_url_func("u;\\url(hack)"), "u;");
-    assert_eq!(filtered_url_func("font-size: 1em; @Import 'foo';"), "font-size: 1em;");
-    assert_eq!(filtered_url_func("@\\69MporT 'foo';"), "");
-    assert_eq!(filtered_url_func("color: red; background: URL( url(); huh)"), "color: red; huh)");
-    assert_eq!(filtered_url_func("color: red; background: URL(//x/rel);"), "color: red; background: url(/rel);");
-    assert_eq!(filtered_url_func("color: red; background: URL(data:xx);"), "color: red; background: url(#);");
-    assert_eq!(filtered_url_func("color: red; background: UR\\L(x); border: blue"), "color: red; border: blue");
-    assert_eq!(filtered_url_func("prop: url (it is not);"), "prop: url (it is not);");
+    let f = Filter::new();
+    assert_eq!(f.filtered_url_func("color: red; background: URL(X); huh"), "color: red; background: url(X); huh");
+    assert_eq!(f.filtered_url_func("@import 'foo'; FONT-size: 1em;"), " FONT-size: 1em;");
+    assert_eq!(f.filtered_url_func("u;url(data:x);rl(hack)"), "u;url(#);rl(hack)");
+    assert_eq!(f.filtered_url_func("u;\\;rl(hack)"), "u;rl(hack)");
+    assert_eq!(f.filtered_url_func("u;\\,rl(hack)"), "u;rl(hack)");
+    assert_eq!(f.filtered_url_func("u;\\url(hack)"), "u;");
+    assert_eq!(f.filtered_url_func("font-size: 1em; @Import 'foo';"), "font-size: 1em;");
+    assert_eq!(f.filtered_url_func("@\\69MporT 'foo';"), "");
+    assert_eq!(f.filtered_url_func("color: red; background: URL( url(); huh)"), "color: red; huh)");
+    assert_eq!(f.filtered_url_func("color: red; background: URL(//x/rel);"), "color: red; background: url(/rel);");
+    assert_eq!(f.filtered_url_func("color: red; background: URL(data:xx);"), "color: red; background: url(#);");
+    assert_eq!(f.filtered_url_func("color: red; background: UR\\L(x); border: blue"), "color: red; border: blue");
+    assert_eq!(f.filtered_url_func("prop: url (it is not);"), "prop: url (it is not);");
 }
 
-/// Transforms URLs to relative (same-origin) URLs if possible. The host part is simply thrown away,
-/// since we're not concerned about causing 404s. Files that depend on cross-origin resources can still
-/// be made to work if the resources are copied to the same host as the file.
-fn filter_url(url: &str) -> Option<String> {
-    // The URL crate won't parse relative URLs directly, and `make_relative()` requires a base too
-    let base_url = url::Url::parse("https://127.0.0.1/__relpath_prefix__/").expect("base");
-    let url = base_url.join(&url).ok()?;
-    if url.cannot_be_a_base() {
-        // TODO: parse `data:` URLs and allow safe image types?
-        return None;
-    }
+#[test]
+fn data_url_filter() {
+    let mut f = Filter::new();
+    f.set_data_url_filter(|_data| {
+        DataUrlFilterResult::Keep
+    });
+    assert!(f.filter_url("data://wat").is_none());
+    assert_eq!(f.filter_url("data:text/plain,meh").unwrap(), "data:text/plain,meh");
 
-    let path = url.path();
-    let mut relative = path
-        .strip_prefix("/__relpath_prefix__/")
-        .unwrap_or(path)
-        .to_string();
-    if relative.trim_start().starts_with("//") {
-        // path became scheme-relative URL
-        return None;
-    }
-    // defence in depth to prevent url being interpreted as having a scheme
-    if relative.contains(':') {
-        relative = relative.replace(':', "%3a");
-    }
-    if let Some(query) = url.query() {
-        relative.push('?');
-        relative.push_str(query);
-    }
-    // this is super unlikely to be an image
-    if relative == "/" {
-        return None;
-    }
-    if let Some(fragment) = url.fragment() {
-        relative.push('#');
-        relative.push_str(fragment);
-    }
-    // in case our type data was wrong and Url type was UrlFunc type, break the url() syntax
-    if relative.contains('(') {
-        relative = relative.replace('(', "%28");
-    }
-    Some(relative)
+    f.set_data_url_filter(|data| {
+        assert_eq!(b"hello test"[..], data.decode_to_vec().unwrap().0);
+        DataUrlFilterResult::Drop
+    });
+    assert!(f.filter_url("data:text/plain,hello%20test").is_none());
+
+    f.set_data_url_filter(|data| {
+        assert_eq!(b"meh"[..], data.decode_to_vec().unwrap().0);
+        DataUrlFilterResult::Rewrite { mime_type: "text/html".into(), data: "hi".into() }
+    });
+    assert_eq!(f.filter_url("data:text/plain,meh").unwrap(), "data:text/html;base64,aGk");
+
+    f.set_data_url_filter(|data| {
+        assert_eq!(b"hi"[..], data.decode_to_vec().unwrap().0);
+        DataUrlFilterResult::Keep
+    });
+    assert_eq!(f.filter_url("data:text/html;base64,aGk#frag").unwrap(), "data:text/html;base64,aGk#frag");
 }
 
 #[test]
 fn url_filter() {
-    assert_eq!(filter_url("http://test.com/a.jpg").unwrap(), "/a.jpg");
+    let f = Filter::new();
+    assert_eq!(f.filter_url("http://test.com/a.jpg").unwrap(), "/a.jpg");
     assert_eq!(
-        filter_url("https://test.com:123/.././a/b/c.jpg").unwrap(),
+        f.filter_url("https://test.com:123/.././a/b/c.jpg").unwrap(),
         "/a/b/c.jpg"
     );
     assert_eq!(
-        filter_url("/hello world.jpg").unwrap(),
+        f.filter_url("/hello world.jpg").unwrap(),
         "/hello%20world.jpg"
     );
-    assert_eq!(filter_url("b.jpg").unwrap(), "b.jpg");
-    assert_eq!(filter_url("./x/").unwrap(), "x/");
-    assert_eq!(filter_url("#hash").unwrap(), "#hash");
-    assert_eq!(filter_url("?q s").unwrap(), "?q%20s");
-    assert_eq!(filter_url("//host/PAth").unwrap(), "/PAth");
-    assert_eq!(filter_url("//host/%2fpath").unwrap(), "/%2fpath");
-    assert_eq!(filter_url("//host%%%/path"), None);
-    assert_eq!(filter_url("//host///path"), None);
-    assert_eq!(filter_url("data:text/html,xx"), None);
-    assert_eq!(filter_url("blob:123"), None);
-    assert_eq!(filter_url("javascript:alert(1)"), None);
-    assert_eq!(filter_url("jAvascript: alert(1)"), None);
-    assert_eq!(filter_url("  jAvascript: alert(1) //http://"), None);
+    assert_eq!(f.filter_url("b.jpg").unwrap(), "b.jpg");
+    assert_eq!(f.filter_url("./x/").unwrap(), "x/");
+    assert_eq!(f.filter_url("#hash").unwrap(), "#hash");
+    assert_eq!(f.filter_url("?q s").unwrap(), "?q%20s");
+    assert_eq!(f.filter_url("//host/PAth").unwrap(), "/PAth");
+    assert_eq!(f.filter_url("//host/%2fpath").unwrap(), "/%2fpath");
+    assert_eq!(f.filter_url("//host%%%/path"), None);
+    assert_eq!(f.filter_url("//host///path"), None);
+    assert_eq!(f.filter_url("data:text/html,xx"), None);
+    assert_eq!(f.filter_url("blob:123"), None);
+    assert_eq!(f.filter_url("javascript:alert(1)"), None);
+    assert_eq!(f.filter_url("jAvascript: alert(1)"), None);
+    assert_eq!(f.filter_url("  jAvascript: alert(1) //http://"), None);
 }

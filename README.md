@@ -25,4 +25,3 @@ This is an early version of this tool. There could be some SVG features or synta
 * Only UTF-8 encoding is supported.
 * `DOCTYPE`s with custom entities are not supported.
 * SVG-in-HTML dialect is not supported. SVG documents must be well-formed XML and use the SVG namespace.
-* `data:` URLs are not allowed.
