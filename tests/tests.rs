@@ -14,8 +14,7 @@ fn whole_file() {
 
 #[test]
 fn ns() {
-    let svg = r##"
-    <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+    let svg = r##"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
     <svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg" xmlns:vector="http://www.w3.org/2000/svg">
         <rect height="300" width="300"/>
         <svg:rect height="200" width="200">
