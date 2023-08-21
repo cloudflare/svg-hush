@@ -21,3 +21,7 @@ xml-rs = "0.8.16"
 
 [package.metadata.release]
 tag-name = "{{version}}"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--generate-link-to-definition"]
