@@ -226,6 +226,8 @@ impl Filter {
         let mut skipping = 0;
         let mut accumulating_css_text: Option<String> = None;
         let mut rewrite = Vec::new();
+        let mut reached_document_end = false;
+        let mut emitted_any_element = false;
         for e in parser {
             let mut e = e?;
             let w = match &mut e {
@@ -280,6 +282,7 @@ impl Filter {
                         name.prefix = None;
                     }
 
+                    emitted_any_element = true;
                     WEvent::StartElement {
                         name: (*name).borrow(),
                         attributes: keep.into(),
@@ -301,13 +304,13 @@ impl Filter {
                         name: Some((*name).borrow()),
                     }
                 }
-
                 REvent::StartDocument {
                     version,
                     encoding: _,
                     standalone: _,
                 } => {
-                    assert_eq!(0, skipping);
+                    debug_assert_eq!(0, skipping);
+                    if skipping != 0 { break; }
                     WEvent::StartDocument {
                         version: *version,
                         encoding: Some("utf-8"),
@@ -315,7 +318,9 @@ impl Filter {
                     }
                 }
                 REvent::EndDocument => {
-                    assert_eq!(0, skipping);
+                    debug_assert_eq!(0, skipping);
+                    if skipping != 0 { break; }
+                    reached_document_end = true;
                     break;
                 }
 
@@ -335,7 +340,11 @@ impl Filter {
             };
             writer.write(w)?;
         }
-        Ok(())
+        if reached_document_end && emitted_any_element {
+            Ok(())
+        } else {
+            return Err(xml::writer::Error::from(io::Error::new(io::ErrorKind::UnexpectedEof, "No acceptable SVG elements found")).into())
+        }
     }
 
     /// This function will be called for every `data:` URL encountered in embedded images.
