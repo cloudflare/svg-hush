@@ -25,3 +25,9 @@ name = "filter"
 path = "fuzz_targets/filter.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "idempotent"
+path = "fuzz_targets/idempotent.rs"
+test = false
+doc = false
