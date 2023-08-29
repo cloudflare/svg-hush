@@ -53,7 +53,7 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "svg-hush"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "base64",
  "data-url",
