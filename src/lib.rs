@@ -183,6 +183,8 @@ pub struct Filter {
     /// We're not allowing non-SVG namespaces anyway
     strip_prefixes: bool,
     image_filter: Option<Box<dyn for<'a> Fn(&'a DataUrl<'a>) -> DataUrlFilterResult>>,
+    /// HTTP header
+    content_type: Option<String>,
 }
 
 impl Filter {
@@ -192,7 +194,13 @@ impl Filter {
             sort_attributes: true,
             strip_prefixes: true,
             image_filter: None,
+            content_type: None,
         }
+    }
+
+    /// If parsing SVG from HTTP, provide the value of the HTTP header to read encoding from.
+    pub fn set_content_type_header(&mut self, header: impl Into<String>) {
+        self.content_type = Some(header.into());
     }
 
     fn is_allowed_element(&self, name: Name) -> ElementAction {
@@ -209,11 +217,16 @@ impl Filter {
 
     /// Read an SVG image from the `source` and write a filtered image to the `destination`.
     pub fn filter<Read: io::Read, Write: io::Write>(&self, source: Read, destination: Write) -> Result<(), FError> {
-        let parser = ParserConfig::new()
+        let mut config = ParserConfig::new()
             .cdata_to_characters(true)
             .ignore_comments(true)
             .coalesce_characters(false)
-            .create_reader(source);
+            .allow_multiple_root_elements(false);
+        if let Some(ct) = &self.content_type {
+            config = config.content_type(&ct);
+        }
+
+        let parser = config.create_reader(source);
 
         let mut writer = EmitterConfig::new()
             .cdata_to_characters(true)
