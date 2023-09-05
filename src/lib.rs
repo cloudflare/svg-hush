@@ -221,7 +221,11 @@ impl Filter {
             .cdata_to_characters(true)
             .ignore_comments(true)
             .coalesce_characters(false)
-            .allow_multiple_root_elements(false);
+            .allow_multiple_root_elements(false)
+            .max_attributes(200)
+            .max_entity_expansion_depth(3)
+            .max_data_length(1<<28)
+            .max_name_length(1000);
         if let Some(ct) = &self.content_type {
             config = config.content_type(&ct);
         }
