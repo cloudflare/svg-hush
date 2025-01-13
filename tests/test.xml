@@ -20,6 +20,7 @@
 <rect fill="url('//x.example.com/test.svg')" x="0" y="0" width="1000" height="1000"></rect>
 <rect fill="url(&quot;/test.svg&quot;)" x="0" y="0" width="1000" height="1000"></rect>
 <rect fill="ur&#108;('#test.svg')" x="0" y="0" width="1000" height="1000"></rect>
+<style>@font-face {font-family: FontyFont;src: url(data:font/woff2;base64,d09GMgABAAAAABIkAA4AAAAAIAgAABHRAAEAAAAAAAAAAAA);}</style>
 <img rdf:nodeID="abc" xmlns:rdf="urn:the-rdf-uri" />
 <image href="test.gif" x="333" y="444"/>
 <image src="//x.example.com/" />

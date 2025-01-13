@@ -520,67 +520,47 @@ impl Filter {
     /// and enabling filter bypass (e.g. if our tokenizer saw a comment but browsers didn't).
     /// Proper implementation needs browser-grade parsers, and that's a big ask for a small tool.
     ///
-    /// So here's a brute approach instead: throwing out everything that isn't obviously trivial.
-    /// We don't really need to support SVG files that rely on weird tricky syntax. We can mangle all
-    /// the edge cases as long as we're erring on the side of safety.
+    /// So here's a brute approach instead: replacing everything that could possibly be a `url()`,
+    /// and throwing away everything that looks tricky to parse.
     fn filtered_url_func(&self, css_or_svg: &str) -> String {
-        // If we see something suspicious we'll try to remove it instead of throwing away the whole stylesheet/attribute.
-        css_or_svg.split_inclusive([';', '{', '}', ','])
-            .filter_map(|full_chunk| {
-                // CSS allows escapes in identifiers! No escape schenanigans allowed, as this makes matching require a proper tokenizer.
-                if full_chunk.contains('\\') {
-                    // TODO: could perform unescaping instead
-                    return None;
-                }
+        let mut out = String::with_capacity(css_or_svg.len());
 
-                // without escapes it's reasonable to search for identifiers now (lowercase to make them case-insensitive)
-                let chunk_lower = full_chunk.to_ascii_lowercase();
-                // @rules don't allow extra whitespace, so apart from escapes, they can't be obfuscated
-                if chunk_lower.contains("@import") {
-                    return None;
-                }
+        // find next potential start of a URL (case-insensitive)
+        let mut inside_url = false;
+        for mut chunk in css_or_svg.split_inclusive('(') {
+            if inside_url {
+                // unescaped ( in URLs is not allowed, keep skipping until url( closes
+                let Some((url, rest)) = chunk.split_once(')') else {
+                    continue;
+                };
+                chunk = rest;
 
-                // `url()` doesn't allow whitespace before '('
-                if chunk_lower.contains("url(") {
-                    let mut out = String::with_capacity(chunk_lower.len());
-                    // this is like split(), but with the match done on lowercased string for case-insensitivity. Indices are used to get original case back.
-                    // this works thanks to to_ascii_lowercase preserving offsets.
-                    let mut last_idx = 0;
-                    let mut url_chunks = chunk_lower.match_indices("url(").chain(Some((full_chunk.len(), "")))
-                        .map(|(idx, frag)| {
-                            let s = &full_chunk[last_idx..idx];
-                            last_idx = idx+frag.len();
-                            s
-                        });
-                    out.push_str(url_chunks.next().expect("first")); // text before `url(`
-                    while let Some(url_chunk) = url_chunks.next() {
-                        // Too bad if you use unescaped () in your URL
-                        let mut urlfunc_parts = url_chunk.split(')');
-                        let urlfunc = urlfunc_parts.next().expect("first");
-                        let after_urlfunc = urlfunc_parts.next()?; // if it's none, it's `url(url(`, which we don't want
-                        let url = urlfunc.trim()
-                            // we've already established there are no escape chars in the chunk,
-                            // so there can't be any tricky things inside the string.
-                            // Sorry to everyone who uses unescaped quote chars at the end of their URLs.
-                            .trim_start_matches(['"', '\'']).trim_end_matches(['"', '\''])
-                            // the quoted value allows whitespace too!
-                            .trim();
-                        let url = self.filter_url(url)
-                            // no tricky chars please. For SVG it's important to keep url() even if the URL inside it is bogus
-                            // because otherwise properties like fill would default to black instead of transparent
-                            .filter(|url| !url.contains(['(',')','\'','"','\\']));
-                        let url = url.as_deref().unwrap_or("#");
-                        out.push_str("url(");
-                        out.push_str(url);
-                        out.push(')');
-                        out.push_str(after_urlfunc); // it's important to keep the terminator
+                let url = url.trim()
+                    .trim_start_matches(['"', '\'']).trim_end_matches(['"', '\''])
+                    // the quoted value allows whitespace too!
+                    .trim();
+
+                let url = self.filter_url(url)
+                    // no tricky chars please.
+                    .filter(|url| !url.contains(['(', ')', '\'', '"', '\\', ' ']));
+                // the url(#) must stay to keep the syntax valid
+                out.push_str(&url.as_deref().unwrap_or("#"));
+                out.push(')');
+            }
+
+            for chunk in chunk.split_inclusive([';', '{', '}', ',']) {
+                if chunk.contains('\\') || (chunk.contains('@') && chunk.to_ascii_lowercase().contains("@import")) {
+                    if let Some(b @ (b'{' | b'}')) = chunk.as_bytes().last().copied() {
+                        out.push(b as char);
                     }
-                    return Some(Cow::Owned(out));
+                    continue;
                 }
-
-                Some(Cow::Borrowed(full_chunk))
-            })
-            .collect()
+                out.push_str(chunk);
+                // `url()` doesn't allow whitespace before '('
+                inside_url = chunk.len() >= 4 && chunk.get(chunk.len() - 4..).is_some_and(|c| c.eq_ignore_ascii_case("url("));
+            }
+        }
+        out
     }
 }
 
@@ -593,28 +573,30 @@ fn urlfunc() {
     assert_eq!(f.filtered_url_func("hello, url( http://evil.com )"), "hello, url(#)");
     assert_eq!(f.filtered_url_func("hello, url( //evil.com )"), "hello, url(#)");
     assert_eq!(f.filtered_url_func("url( /okay ), (), bye"), "url(/okay), (), bye");
-    assert_eq!(f.filtered_url_func("hello, url( unclosed"), "hello,");
+    assert_eq!(f.filtered_url_func("hello, url( unclosed"), "hello, url(");
     assert_eq!(f.filtered_url_func("hello, url( ) url(    ) bork"), "hello, url() url() bork");
     assert_eq!(f.filtered_url_func("hello, url('1' )url(  2  ) bork"), "hello, url(1)url(2) bork");
-    assert_eq!(f.filtered_url_func("hello, url('(' )"), "hello, url(%28)");
+    assert_eq!(f.filtered_url_func("hello, url('(' )"), "hello, url()");
 }
 
 #[test]
 fn css() {
     let f = Filter::new();
-    assert_eq!(f.filtered_url_func("color: red; background: URL(X); huh"), "color: red; background: url(X); huh");
+    assert_eq!(f.filtered_url_func("ok:url(data:text/plain;base64,AAA)"), "ok:url(#)");
+    assert_eq!(f.filtered_url_func("color: red; background: URL(X); huh"), "color: red; background: URL(X); huh");
     assert_eq!(f.filtered_url_func("@import 'foo'; FONT-size: 1em;"), " FONT-size: 1em;");
     assert_eq!(f.filtered_url_func("u;url(data:x);rl(hack)"), "u;url(#);rl(hack)");
     assert_eq!(f.filtered_url_func("u;\\;rl(hack)"), "u;rl(hack)");
     assert_eq!(f.filtered_url_func("u;\\,rl(hack)"), "u;rl(hack)");
-    assert_eq!(f.filtered_url_func("u;\\url(hack)"), "u;");
+    assert_eq!(f.filtered_url_func("u;\\url(hack)"), "u;hack)");
     assert_eq!(f.filtered_url_func("font-size: 1em; @Import 'foo';"), "font-size: 1em;");
     assert_eq!(f.filtered_url_func("@\\69MporT 'foo';"), "");
-    assert_eq!(f.filtered_url_func("color: red; background: URL( url(); huh)"), "color: red; huh)");
-    assert_eq!(f.filtered_url_func("color: red; background: URL(//x/rel);"), "color: red; background: url(/rel);");
-    assert_eq!(f.filtered_url_func("color: red; background: URL(data:xx);"), "color: red; background: url(#);");
-    assert_eq!(f.filtered_url_func("color: red; background: UR\\L(x); border: blue"), "color: red; border: blue");
+    assert_eq!(f.filtered_url_func("color: red; background: URL( url(); huh)"), "color: red; background: URL(); huh)");
+    assert_eq!(f.filtered_url_func("color: red; background: URL(//x/rel);"), "color: red; background: URL(/rel);");
+    assert_eq!(f.filtered_url_func("color: red; background: URL(data:xx);"), "color: red; background: URL(#);");
+    assert_eq!(f.filtered_url_func("color: red; background: UR\\L(x); border: blue"), "color: red;x); border: blue");
     assert_eq!(f.filtered_url_func("prop: url (it is not);"), "prop: url (it is not);");
+    assert_eq!(f.filtered_url_func("sel, sel\\2 { bg: url(data:x); ba\\d; }"), "sel,{ bg: url(#); }");
 }
 
 #[test]

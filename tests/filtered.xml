@@ -7,11 +7,11 @@
 <rect fill="url(/url.svg#p1)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/url.svg#p2)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/url.svg#p3)" height="1000" width="1000" x="0" y="0"/>
-<rect fill="url(/url.svg#p4)" height="1000" width="1000" x="0" y="0"/>
-<rect fill="url(/url.svg#p5)" height="1000" width="1000" x="0" y="0"/>
-<rect fill="" height="5" width="5" x="0" y="0"/>
-<rect fill="url(/url.svg%28)#p7&apos;" height="1000" width="10" x="0" y="0"/>
-<rect fill="" height="4" width="4" x="0" y="0"/>
+<rect fill="URL(/url.svg#p4)" height="1000" width="1000" x="0" y="0"/>
+<rect fill="Url(/url.svg#p5)" height="1000" width="1000" x="0" y="0"/>
+<rect fill="url(#)#p6)" height="5" width="5" x="0" y="0"/>
+<rect fill="url()#p7&apos;)" height="1000" width="10" x="0" y="0"/>
+<rect fill="&apos;//backslash.invalid/url.svg()#p8&apos;)" height="4" width="4" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
@@ -19,6 +19,7 @@
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(#test.svg)" height="1000" width="1000" x="0" y="0"/>
+<style>@font-face {font-family: FontyFont;src: url(#);}</style>
 
 <image href="test.gif" x="333" y="444"/>
 <image/>
