@@ -535,8 +535,7 @@ impl Filter {
                 };
                 chunk = rest;
 
-                let url = url.trim()
-                    .trim_start_matches(['"', '\'']).trim_end_matches(['"', '\''])
+                let url = url.trim().trim_matches(['"', '\''])
                     // the quoted value allows whitespace too!
                     .trim();
 
@@ -546,6 +545,7 @@ impl Filter {
                 // the url(#) must stay to keep the syntax valid
                 out.push_str(&url.as_deref().unwrap_or("#"));
                 out.push(')');
+                inside_url = false;
             }
 
             for chunk in chunk.split_inclusive([';', '{', '}', ',']) {
@@ -560,6 +560,10 @@ impl Filter {
                 inside_url = chunk.len() >= 4 && chunk.get(chunk.len() - 4..).is_some_and(|c| c.eq_ignore_ascii_case("url("));
             }
         }
+        if inside_url {
+            debug_assert!(out.ends_with('('));
+            out.push(')');
+        }
         out
     }
 }
@@ -573,10 +577,12 @@ fn urlfunc() {
     assert_eq!(f.filtered_url_func("hello, url( http://evil.com )"), "hello, url(#)");
     assert_eq!(f.filtered_url_func("hello, url( //evil.com )"), "hello, url(#)");
     assert_eq!(f.filtered_url_func("url( /okay ), (), bye"), "url(/okay), (), bye");
-    assert_eq!(f.filtered_url_func("hello, url( unclosed"), "hello, url(");
+    assert_eq!(f.filtered_url_func("hello, url( unclosed"), "hello, url()");
     assert_eq!(f.filtered_url_func("hello, url( ) url(    ) bork"), "hello, url() url() bork");
     assert_eq!(f.filtered_url_func("hello, url('1' )url(  2  ) bork"), "hello, url(1)url(2) bork");
     assert_eq!(f.filtered_url_func("hello, url('(' )"), "hello, url()");
+    assert_eq!(f.filtered_url_func("aurl(burl("), "aurl()");
+    assert_eq!(f.filtered_url_func("uurl()rl("), "uurl()rl(");
 }
 
 #[test]
