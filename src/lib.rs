@@ -458,9 +458,10 @@ impl Filter {
             DataUrlFilterResult::Drop => None,
             DataUrlFilterResult::Keep => Some(url_str.to_owned()),
             DataUrlFilterResult::Rewrite { mime_type, data } => {
+                use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
                 let mut out = String::with_capacity(mime_type.len() + data.len()*8/6 + 20);
                 out.push_str("data:"); out.push_str(&mime_type); out.push_str(";base64,");
-                base64::encode_config_buf(data, base64::Config::new(base64::CharacterSet::Standard, false), &mut out);
+                STANDARD_NO_PAD.encode_string(data, &mut out);
                 Some(out)
             },
         }
