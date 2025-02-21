@@ -18,7 +18,10 @@
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
+<rect fill="url(/test.svg)" height="1000" width="1000" x="0" y="0"/>
 <rect fill="url(#test.svg)" height="1000" width="1000" x="0" y="0"/>
+<style>@font-face {font-family: FontyFont;src: url(#);}</style>
+<style>@font-face {font-family: FontyFont;src: url(#);}</style>
 <style>@font-face {font-family: FontyFont;src: url(#);}</style>
 
 <image href="test.gif" x="333" y="444"/>

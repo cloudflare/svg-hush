@@ -17,12 +17,23 @@ path = ".."
 [workspace]
 members = ["."]
 
+[profile.dev]
+debug = 1
+opt-level = 3
+
 [profile.release]
 debug = 1
+debug-assertions = true
 
 [[bin]]
 name = "filter"
 path = "fuzz_targets/filter.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "url"
+path = "fuzz_targets/url.rs"
 test = false
 doc = false
 
