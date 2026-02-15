@@ -16,6 +16,7 @@ pub enum DataUrlFilterResult {
 }
 
 /// An example preset for [`crate::Filter::set_data_url_filter`]
+#[must_use] 
 pub fn allow_standard_images(data: &DataUrl) -> DataUrlFilterResult {
     let mime = data.mime_type();
     // It's not safe to add uncommon formats to this list, because unrecognized data: URL types trigger downloads.

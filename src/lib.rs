@@ -12,11 +12,11 @@
 
 use crate::data_url_filter::DataUrl;
 use crate::data_url_filter::DataUrlFilterResult;
-use once_cell::sync::Lazy;
 use quick_error::quick_error;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::LazyLock;
 use xml::attribute::{Attribute, OwnedAttribute};
 use xml::EmitterConfig;
 use xml::name::Name;
@@ -85,7 +85,7 @@ pub(crate) enum AttrType {
     StyleSheet,
 }
 
-static ALLOWED_SVG_ELEMENTS: Lazy<HashSet<&'static str>> = Lazy::new(|| [
+static ALLOWED_SVG_ELEMENTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| [
     "a", // but href is checked separately
     "altGlyph",
     "altGlyphDef",
@@ -170,7 +170,7 @@ static ALLOWED_SVG_ELEMENTS: Lazy<HashSet<&'static str>> = Lazy::new(|| [
     "vkern",
 ].into());
 
-static ATTRIBUTE_TYPES: Lazy<HashMap<&'static str, AttrType>> = Lazy::new(|| {
+static ATTRIBUTE_TYPES: LazyLock<HashMap<&'static str, AttrType>> = LazyLock::new(|| {
     let attribute_types: HashMap<_, _> = attrs::ATTRS.iter().copied().collect();
     assert_eq!(attribute_types.len(), attrs::ATTRS.len());
     attribute_types
@@ -189,6 +189,7 @@ pub struct Filter {
 
 impl Filter {
     /// Create new filter instance. Call [`Filter::filter`] on it.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             sort_attributes: true,
@@ -212,7 +213,7 @@ impl Filter {
                 return ElementAction::Keep;
             }
         }
-        return ElementAction::Drop;
+        ElementAction::Drop
     }
 
     /// Read an SVG image from the `source` and write a filtered image to the `destination`.
@@ -227,7 +228,7 @@ impl Filter {
             .max_data_length(1<<28)
             .max_name_length(1000);
         if let Some(ct) = &self.content_type {
-            config = config.content_type(&ct);
+            config = config.content_type(ct);
         }
 
         let parser = config.create_reader(source);
@@ -290,7 +291,7 @@ impl Filter {
                     keep.extend(rewrite.iter().map(|a| a.borrow()));
 
                     if self.sort_attributes {
-                        keep.sort_by(|a, b| a.name.local_name.cmp(&b.name.local_name));
+                        keep.sort_by(|a, b| a.name.local_name.cmp(b.name.local_name));
                     }
 
                     // must be done in the end tag too
@@ -353,14 +354,15 @@ impl Filter {
                     } else {
                         WEvent::Characters(c)
                     }
-                }
+                },
+                REvent::Doctype { .. } => continue,
             };
             writer.write(w)?;
         }
         if reached_document_end && emitted_any_element {
             Ok(())
         } else {
-            return Err(xml::writer::Error::from(io::Error::new(io::ErrorKind::UnexpectedEof, "No acceptable SVG elements found")).into())
+            Err(xml::writer::Error::from(io::Error::new(io::ErrorKind::UnexpectedEof, "No acceptable SVG elements found")).into())
         }
     }
 
@@ -410,7 +412,7 @@ impl Filter {
             Cow::Owned(
                 attr.value
                     .chars()
-                    .map(|c| if !c.is_whitespace() { c } else { ' ' })
+                    .map(|c| if c.is_whitespace() { ' ' } else { c })
                     .filter(|&c| c.is_ascii() && c != '\0')
                     .collect(),
             )
@@ -436,7 +438,7 @@ impl Filter {
                 => no_ns_attr_with_value(attr, attr_value),
 
             // Serious filtering starts here
-            Url => self.filter_url(&attr_value).map(|val| no_ns_attr_with_value(attr, val.into())).unwrap_or(Attr::Drop),
+            Url => self.filter_url(&attr_value).map_or(Attr::Drop, |val| no_ns_attr_with_value(attr, val.into())),
             // The SVG spec says FuncIRI is a super simple `url(` token, but in browsers it's not. Browsers still support CSS-isms in url(),
             // so we'll just reuse CSS filter for them.
             UrlFunc => no_ns_attr_with_value(attr, self.filtered_url_func(&attr_value).into()),
@@ -544,7 +546,7 @@ impl Filter {
                     // no tricky chars please.
                     .filter(|url| !url.contains(['(', ')', '\'', '"', '\\', ' ']));
                 // the url(#) must stay to keep the syntax valid
-                out.push_str(&url.as_deref().unwrap_or("#"));
+                out.push_str(url.as_deref().unwrap_or("#"));
                 out.push(')');
                 inside_url = false;
             }

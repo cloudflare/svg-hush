@@ -16,7 +16,10 @@ fn main() -> ExitCode {
 
     let mut stdio;
     let mut filein;
-    let input: &mut dyn Read = if input_path.as_os_str() != "-" {
+    let input: &mut dyn Read = if input_path.as_os_str() == "-" {
+        stdio = std::io::stdin().lock();
+        &mut stdio
+    } else {
         match File::open(&input_path) {
             Ok(f) => {
                 filein = f;
@@ -27,9 +30,6 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-    } else {
-        stdio = std::io::stdin().lock();
-        &mut stdio
     };
 
     let mut stdout;
