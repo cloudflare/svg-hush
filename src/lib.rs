@@ -637,6 +637,34 @@ fn data_url_filter() {
 }
 
 #[test]
+fn namespace_uri_attribute_injection_blocked() {
+    // Regression test for VULN-144180 / HackerOne #3814181:
+    // Attribute injection via unescaped XML namespace URI. An input attribute
+    // value containing &quot; is decoded by the XML parser to a literal " byte
+    // in the namespace URI string; if the writer emits `xmlns="{uri}"` without
+    // escaping, that " breaks out of the attribute and injects an onload
+    // handler that svg-hush is supposed to strip.
+    //
+    // Upstream fix: the `xml` crate emitter (v1.4+) escapes namespace URIs
+    // consistently with normal attribute values (Escaped::<AttributeEscapes>).
+    // svg-hush depends on `xml 1.4` so the injected " becomes &quot; and stays
+    // inside the xmlns="..." attribute value. The test catches a regression if
+    // the dep is ever downgraded or the escaping is otherwise defeated.
+    let malicious = br#"<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg&quot; onload=&quot;alert(1)"><rect/></s:svg>"#;
+    let mut out = Vec::new();
+    Filter::new().filter(&malicious[..], &mut out).expect("filter succeeded");
+    let s = std::str::from_utf8(&out).expect("utf-8");
+
+    // The malicious content must remain inside the xmlns attribute value.
+    // If the " byte in the URI ever emits unescaped, `onload="` (with a
+    // literal quote) would appear as its own attribute. That must not happen.
+    assert!(
+        !s.contains(r#"onload=""#),
+        "svg-hush emitted an injected onload attribute (unescaped): {s}"
+    );
+}
+
+#[test]
 fn url_filter() {
     let f = Filter::new();
     assert_eq!(f.filter_url("http://test.com/a.jpg").unwrap(), "/a.jpg");
